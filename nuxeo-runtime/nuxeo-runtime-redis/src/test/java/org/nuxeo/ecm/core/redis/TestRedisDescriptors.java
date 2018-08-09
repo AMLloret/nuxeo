@@ -39,6 +39,7 @@ public class TestRedisDescriptors {
         xmap = new XMap();
         xmap.register(RedisServerDescriptor.class);
         xmap.register(RedisSentinelDescriptor.class);
+        xmap.register(RedisHostDescriptor.class);
     }
 
     @Test

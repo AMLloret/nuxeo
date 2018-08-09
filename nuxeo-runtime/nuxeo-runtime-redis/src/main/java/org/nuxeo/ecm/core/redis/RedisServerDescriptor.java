@@ -19,13 +19,15 @@
 package org.nuxeo.ecm.core.redis;
 
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.nuxeo.common.xmap.annotation.XNode;
 import org.nuxeo.common.xmap.annotation.XObject;
-
 import redis.clients.jedis.Jedis;
 import redis.clients.jedis.JedisPool;
 import redis.clients.jedis.JedisPoolConfig;
 import redis.clients.jedis.Protocol;
+import redis.clients.jedis.exceptions.JedisException;
 
 /**
  * Descriptor for a Redis configuration.
@@ -34,6 +36,8 @@ import redis.clients.jedis.Protocol;
  */
 @XObject("server")
 public class RedisServerDescriptor extends RedisPoolDescriptor {
+
+    private static final Log log = LogFactory.getLog(RedisServerDescriptor.class);
 
     @XNode("host")
     public String host;
@@ -44,18 +48,30 @@ public class RedisServerDescriptor extends RedisPoolDescriptor {
     @XNode("failoverTimeout")
     public int failoverTimeout = 300;
 
-    @Override
-    public RedisExecutor newExecutor() {
-        try (Jedis jedis = new Jedis(host, port)) {
+    protected boolean canConnect(String name, int port) {
+        try (Jedis jedis = new Jedis(name, port)) {
             if (StringUtils.isNotBlank(password)) {
                 jedis.auth(password);
             }
-            String pong = jedis.ping();
-            if (!"PONG".equals(pong)) {
-                throw new RuntimeException("Cannot connect to Redis host: " + host + ":" + port);
-            }
+            return canPing(jedis);
         }
+    }
 
+    protected boolean canPing(Jedis jedis) {
+        try {
+            String pong = jedis.ping();
+            return "PONG".equals(pong);
+        } catch (JedisException cause) {
+            log.debug("Exception during ping", cause);
+            return false;
+        }
+    }
+
+    @Override
+    public RedisExecutor newExecutor() {
+        if (!canConnect(host, port)) {
+            throw new RuntimeException("Cannot connect to Redis host: " + host + ":" + port);
+        }
         JedisPoolConfig conf = new JedisPoolConfig();
         conf.setMaxTotal(maxTotal);
         conf.setMaxIdle(maxIdle);

@@ -18,17 +18,21 @@ package org.nuxeo.ecm.core.redis;
 import org.apache.commons.lang3.StringUtils;
 import org.nuxeo.common.xmap.annotation.XNode;
 import org.nuxeo.common.xmap.annotation.XObject;
-import org.nuxeo.runtime.model.Descriptor;
 
 import redis.clients.jedis.Protocol;
 
 @XObject("pool")
-public abstract class RedisPoolDescriptor implements Descriptor {
+public abstract class RedisPoolDescriptor {
 
     @XNode("disabled")
-    protected boolean disabled;
+    protected boolean disabled = false;
 
     public String password;
+
+    @XNode("password")
+    public void setPassword(String value) {
+        password = StringUtils.defaultIfBlank(value, null);
+    }
 
     @XNode("database")
     public int database = Protocol.DEFAULT_DATABASE;
@@ -44,16 +48,6 @@ public abstract class RedisPoolDescriptor implements Descriptor {
 
     @XNode("prefix")
     public String prefix;
-
-    @Override
-    public final String getId() {
-        return "main";
-    }
-
-    @XNode("password")
-    public void setPassword(String value) {
-        password = StringUtils.defaultIfBlank(value, null);
-    }
 
     protected abstract RedisExecutor newExecutor();
 }
