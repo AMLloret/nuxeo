@@ -45,6 +45,8 @@ import org.junit.Ignore;
 import org.junit.Test;
 import org.nuxeo.ecm.core.api.DocumentModel;
 import org.nuxeo.ecm.core.api.DocumentModelList;
+import org.nuxeo.ecm.core.query.sql.model.Predicates;
+import org.nuxeo.ecm.core.query.sql.model.QueryBuilder;
 import org.nuxeo.ecm.core.test.annotations.Granularity;
 import org.nuxeo.ecm.core.test.annotations.RepositoryConfig;
 import org.nuxeo.ecm.directory.AbstractDirectory;
@@ -535,6 +537,20 @@ public abstract class AbstractDirectoryTest {
             assertEquals(1, list.size());
             DocumentModel dm = list.get(0);
             assertEquals("Administrator", dm.getProperty(SCHEMA, "username"));
+        }
+    }
+
+    @Test
+    public void testQueryWithBuilder() throws Exception {
+        try (Session session = getSession()) {
+            QueryBuilder queryBuilder = new QueryBuilder().predicates(Predicates.eq("username", "user_1"));
+            DocumentModelList list = session.query(queryBuilder, false);
+            assertEquals(1, list.size());
+
+            queryBuilder = new QueryBuilder().predicates(
+                    Predicates.or(Predicates.eq("username", "user_1"), Predicates.eq("username", "Administrator")));
+            list = session.query(queryBuilder, false);
+            assertEquals(2, list.size());
         }
     }
 

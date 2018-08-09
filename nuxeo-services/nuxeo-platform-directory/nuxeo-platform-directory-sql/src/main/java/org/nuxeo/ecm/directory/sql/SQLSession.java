@@ -47,6 +47,26 @@ import org.nuxeo.ecm.core.api.PropertyException;
 import org.nuxeo.ecm.core.api.impl.DocumentModelListImpl;
 import org.nuxeo.ecm.core.api.model.Property;
 import org.nuxeo.ecm.core.api.security.SecurityConstants;
+import org.nuxeo.ecm.core.query.QueryParseException;
+import org.nuxeo.ecm.core.query.sql.model.BooleanLiteral;
+import org.nuxeo.ecm.core.query.sql.model.DateLiteral;
+import org.nuxeo.ecm.core.query.sql.model.DefaultQueryVisitor;
+import org.nuxeo.ecm.core.query.sql.model.DoubleLiteral;
+import org.nuxeo.ecm.core.query.sql.model.Expression;
+import org.nuxeo.ecm.core.query.sql.model.Function;
+import org.nuxeo.ecm.core.query.sql.model.IntegerLiteral;
+import org.nuxeo.ecm.core.query.sql.model.Literal;
+import org.nuxeo.ecm.core.query.sql.model.LiteralList;
+import org.nuxeo.ecm.core.query.sql.model.MultiExpression;
+import org.nuxeo.ecm.core.query.sql.model.Operand;
+import org.nuxeo.ecm.core.query.sql.model.Operator;
+import org.nuxeo.ecm.core.query.sql.model.OrderByExpr;
+import org.nuxeo.ecm.core.query.sql.model.OrderByList;
+import org.nuxeo.ecm.core.query.sql.model.Predicate;
+import org.nuxeo.ecm.core.query.sql.model.Predicates;
+import org.nuxeo.ecm.core.query.sql.model.QueryBuilder;
+import org.nuxeo.ecm.core.query.sql.model.Reference;
+import org.nuxeo.ecm.core.query.sql.model.StringLiteral;
 import org.nuxeo.ecm.core.schema.types.Field;
 import org.nuxeo.ecm.core.storage.sql.ColumnSpec;
 import org.nuxeo.ecm.core.storage.sql.jdbc.JDBCLogger;
@@ -62,7 +82,6 @@ import org.nuxeo.ecm.directory.BaseSession;
 import org.nuxeo.ecm.directory.DirectoryException;
 import org.nuxeo.ecm.directory.OperationNotAllowedException;
 import org.nuxeo.ecm.directory.PasswordHelper;
-import org.nuxeo.ecm.directory.Reference;
 import org.nuxeo.ecm.directory.sql.filter.SQLComplexFilter;
 
 /**
@@ -83,7 +102,7 @@ public class SQLSession extends BaseSession {
 
     Connection sqlConnection;
 
-    private final Dialect dialect;
+    protected final Dialect dialect;
 
     protected JDBCLogger logger = new JDBCLogger("SQLDirectory");
 
@@ -160,7 +179,7 @@ public class SQLSession extends BaseSession {
             // fetch the reference fields
             if (fetchReferences) {
                 Map<String, List<String>> targetIdsMap = new HashMap<>();
-                for (Reference reference : directory.getReferences()) {
+                for (org.nuxeo.ecm.directory.Reference reference : directory.getReferences()) {
                     List<String> targetIds = reference.getTargetIdsForSource(entry.getId());
                     targetIds = new ArrayList<>(targetIds);
                     Collections.sort(targetIds);
@@ -256,6 +275,23 @@ public class SQLSession extends BaseSession {
             }
         }
         return whereClause;
+    }
+
+    protected void addFilterWhereClause(StringBuilder clause, List<ColumnAndValue> params) {
+        if (staticFilters.length == 0) {
+            return;
+        }
+        for (SQLStaticFilter filter : staticFilters) {
+            if (clause.length() > 0) {
+                clause.append(" AND ");
+            }
+            Column column = filter.getDirectoryColumn(table, getDirectory().useNativeCase());
+            clause.append(column.getQuotedName());
+            clause.append(" ");
+            clause.append(filter.getOperator());
+            clause.append(" ?");
+            params.add(new ColumnAndValue(column, filter.getValue()));
+        }
     }
 
     protected void addFilterValues(PreparedStatement ps, int startIdx) {
@@ -599,7 +635,7 @@ public class SQLSession extends BaseSession {
                         // fetch the reference fields
                         if (fetchReferences) {
                             Map<String, List<String>> targetIdsMap = new HashMap<>();
-                            for (Reference reference : directory.getReferences()) {
+                            for (org.nuxeo.ecm.directory.Reference reference : directory.getReferences()) {
                                 List<String> targetIds = reference.getTargetIdsForSource(docModel.getId());
                                 String fieldName = reference.getFieldName();
                                 if (targetIdsMap.containsKey(fieldName)) {
@@ -643,6 +679,445 @@ public class SQLSession extends BaseSession {
             } catch (SQLException e1) {
             }
             throw new DirectoryException("query failed", e);
+        }
+    }
+
+    @Override
+    public DocumentModelList query(QueryBuilder queryBuilder, boolean fetchReferences) {
+        int limit = (int) queryBuilder.limit();
+        int offset = (int) queryBuilder.offset();
+
+        if (!hasPermission(SecurityConstants.READ)) {
+            return new DocumentModelListImpl();
+        }
+        if (PasswordFieldDetector.hasPasswordField(queryBuilder.predicate(), getPasswordField())) {
+            throw new DirectoryException("Cannot filter on password");
+        }
+
+        if (isMultiTenant()) {
+            // filter entries on the tenantId field also
+            String tenantId = getCurrentTenantId();
+            if (!StringUtils.isEmpty(tenantId)) {
+                queryBuilder.addAndPredicate(Predicates.eq(TENANT_ID_FIELD, tenantId));
+            }
+        }
+
+        // build where clause from query
+        SQLQueryBuilder builder = new SQLQueryBuilder();
+        builder.visitMultiExpression((MultiExpression) queryBuilder.predicate());
+        // add static filters
+        addFilterWhereClause(builder.clause, builder.params);
+        // get resulting clause
+        String whereClause = builder.clause.toString();
+
+        try {
+            acquireConnection();
+
+            /*
+             * count the total number of results
+             */
+            int queryLimitSize = getDirectory().getDescriptor().getQuerySizeLimit();
+            boolean trucatedResults = false;
+            int count = -2;
+            if (queryLimitSize != 0 && (limit <= 0 || limit > queryLimitSize)) {
+                Select select = new Select(table);
+                select.setWhat("COUNT(*)");
+                select.setFrom(table.getQuotedName());
+                select.setWhere(whereClause);
+                String countQuery = select.getStatement();
+                if (logger.isLogEnabled()) {
+                    List<Serializable> values = new ArrayList<>(builder.params.size());
+                    for (ColumnAndValue columnAndValue : builder.params) {
+                        values.add(columnAndValue.value);
+                    }
+                    logger.logSQL(countQuery, values);
+                }
+                try (PreparedStatement ps = sqlConnection.prepareStatement(countQuery)) {
+                    int i = 1;
+                    for (ColumnAndValue columnAndValue : builder.params) {
+                        setFieldValue(ps, i++, columnAndValue.column, columnAndValue.value);
+                    }
+                    try (ResultSet rs = ps.executeQuery()) {
+                        rs.next();
+                        count = rs.getInt(1);
+                    }
+                }
+                if (logger.isLogEnabled()) {
+                    logger.logCount(count);
+                }
+                if (count > queryLimitSize) {
+                    trucatedResults = true;
+                    limit = queryLimitSize;
+                    log.error("Displayed results will be truncated because too many rows in result: " + count);
+                    // throw new SizeLimitExceededException("too many rows in result: " + count);
+                }
+            }
+
+            /*
+             * actual query
+             */
+            Select select = new Select(table);
+            select.setWhat(getReadColumnsSQL());
+            select.setFrom(table.getQuotedName());
+            select.setWhere(whereClause);
+
+            StringBuilder orderBy = new StringBuilder();
+            OrderByList orders = queryBuilder.orders();
+            if (!orders.isEmpty()) {
+                for (OrderByExpr ob : orders) {
+                    if (orderBy.length() != 0) {
+                        orderBy.append(", ");
+                    }
+                    orderBy.append(dialect.openQuote());
+                    orderBy.append(ob.reference.name);
+                    orderBy.append(dialect.closeQuote());
+                    if (ob.isDescending) {
+                        orderBy.append(" DESC");
+                    }
+                }
+                select.setOrderBy(orderBy.toString());
+            }
+            String query = select.getStatement();
+
+            boolean manualLimitOffset;
+            if (limit <= 0) {
+                manualLimitOffset = false;
+            } else {
+                if (offset < 0) {
+                    offset = 0;
+                }
+                if (dialect.supportsPaging()) {
+                    query = dialect.addPagingClause(query, limit, offset);
+                    manualLimitOffset = false;
+                } else {
+                    manualLimitOffset = true;
+                }
+            }
+
+            if (logger.isLogEnabled()) {
+                List<Serializable> values = new ArrayList<>(builder.params.size());
+                for (ColumnAndValue columnAndValue : builder.params) {
+                    values.add(columnAndValue.value);
+                }
+                logger.logSQL(query, values);
+            }
+
+            // execute the query and create a documentModel list
+            DocumentModelListImpl list = new DocumentModelListImpl();
+            try (PreparedStatement ps = sqlConnection.prepareStatement(query)) {
+                int i = 1;
+                for (ColumnAndValue columnAndValue : builder.params) {
+                    setFieldValue(ps, i++, columnAndValue.column, columnAndValue.value);
+                }
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        // fetch values for stored fields
+                        Map<String, Object> map = new HashMap<>();
+                        for (Column column : getReadColumns()) {
+                            Object o = getFieldValue(rs, column);
+                            map.put(column.getKey(), o);
+                        }
+                        DocumentModel docModel = fieldMapToDocumentModel(map);
+                        // fetch the reference fields
+                        if (fetchReferences) {
+                            Map<String, List<String>> targetIdsMap = new HashMap<>();
+                            for (org.nuxeo.ecm.directory.Reference reference : directory.getReferences()) {
+                                List<String> targetIds = reference.getTargetIdsForSource(docModel.getId());
+                                String fieldName = reference.getFieldName();
+                                if (targetIdsMap.containsKey(fieldName)) {
+                                    targetIdsMap.get(fieldName).addAll(targetIds);
+                                } else {
+                                    targetIdsMap.put(fieldName, targetIds);
+                                }
+                            }
+                            for (Entry<String, List<String>> en : targetIdsMap.entrySet()) {
+                                String fieldName = en.getKey();
+                                List<String> targetIds = en.getValue();
+                                docModel.setProperty(schemaName, fieldName, targetIds);
+                            }
+                        }
+                        list.add(docModel);
+                    }
+                }
+            }
+            if (manualLimitOffset) {
+                int totalSize = list.size();
+                if (offset > 0) {
+                    if (offset >= totalSize) {
+                        list = new DocumentModelListImpl();
+                    } else {
+                        list = new DocumentModelListImpl(list.subList(offset, totalSize));
+                    }
+                }
+                if (list.size() > limit) { // list.size() not totalSize, we may have an offset already
+                    list = new DocumentModelListImpl(list.subList(0, limit));
+                }
+                list.setTotalSize(totalSize);
+            } else if (trucatedResults) {
+                list.setTotalSize(count);
+            }
+            return list;
+
+        } catch (SQLException e) {
+            try {
+                sqlConnection.close();
+            } catch (SQLException ee) {
+                log.error(ee, ee);
+            }
+            throw new DirectoryException("query failed", e);
+        }
+    }
+
+    /**
+     * Visitor for a query to check if it contains a reference to the password field.
+     *
+     * @since 10.3
+     */
+    public static class PasswordFieldDetector extends DefaultQueryVisitor {
+
+        private static final long serialVersionUID = 1L;
+
+        protected boolean hasPasswordField;
+
+        protected final String passwordField;
+
+        /**
+         * Checks if the given predicate contains the password field.
+         */
+        public static boolean hasPasswordField(Predicate predicate, String passwordField) {
+            PasswordFieldDetector visitor = new PasswordFieldDetector(passwordField);
+            visitor.visitMultiExpression((MultiExpression) predicate);
+            return visitor.hasPasswordField;
+        }
+
+        public PasswordFieldDetector(String passwordField) {
+            this.passwordField = passwordField;
+        }
+
+        @Override
+        public void visitReference(Reference node) {
+            if (node.name.equals(passwordField)) {
+                hasPasswordField = true;
+            }
+        }
+    }
+
+    /** @since 10.3 */
+    protected static class ColumnAndValue {
+
+        public final Column column;
+
+        public final Serializable value;
+
+        public ColumnAndValue(Column column, Serializable value) {
+            this.column = column;
+            this.value = value;
+        }
+    }
+
+    /**
+     * Builds the database-level WHERE query from the AST, and collects parameters associated to free variables along
+     * with the database column to which they correspond.
+     *
+     * @since 10.3
+     */
+    protected class SQLQueryBuilder extends DefaultQueryVisitor {
+
+        private static final long serialVersionUID = 1L;
+
+        public static final String PATH_SEP = "/";
+
+        public final StringBuilder clause = new StringBuilder();
+
+        public final List<ColumnAndValue> params = new ArrayList<>();
+
+        protected Column visitedColumn;
+
+        @Override
+        public void visitMultiExpression(MultiExpression node) {
+            clause.append('(');
+            for (Iterator<Operand> it = node.values.iterator(); it.hasNext();) {
+                it.next().accept(this);
+                if (it.hasNext()) {
+                    node.operator.accept(this);
+                }
+            }
+            clause.append(')');
+        }
+
+        @Override
+        public void visitExpression(Expression node) {
+            clause.append('(');
+            Operand lvalue = node.lvalue;
+            Operand rvalue = node.rvalue;
+            Column column = null;
+            if (lvalue instanceof Reference) {
+                Reference ref = (Reference) lvalue;
+                if (ref.cast != null) {
+                    throw new QueryParseException("Cannot use cast: " + node);
+                }
+                column = getColumn(ref.name);
+                Operator op = node.operator;
+                if (op == Operator.BETWEEN || op == Operator.NOTBETWEEN) {
+                    visitExpressionBetween(column, op, (LiteralList) rvalue);
+                } else if (op == Operator.LIKE || op == Operator.NOTLIKE) {
+                    visitExpressionLike(column, op, rvalue);
+                } else if (op == Operator.ILIKE || op == Operator.NOTILIKE) {
+                    visitExpressionILike(column, op, rvalue);
+                } else {
+                    visitExpression(column, op, rvalue);
+                }
+            } else {
+                super.visitExpression(node);
+            }
+            clause.append(')');
+        }
+
+        protected void visitExpressionBetween(Column column, Operator op, LiteralList list) {
+            visitColumn(column);
+            op.accept(this);
+            list.get(0).accept(this);
+            clause.append(" AND ");
+            list.get(1).accept(this);
+        }
+
+        protected void visitExpressionLike(Column column, Operator op, Operand rvalue) {
+            visitExpression(column, op, rvalue);
+            addLikeEscaping();
+        }
+
+        protected void visitExpressionILike(Column column, Operator op, Operand rvalue) {
+            if (dialect.supportsIlike()) {
+                visitExpression(column, op, rvalue);
+            } else {
+                clause.append("LOWER(");
+                visitColumn(column);
+                clause.append(") ");
+                if (op == Operator.NOTILIKE) {
+                    clause.append("NOT ");
+                }
+                clause.append("LIKE");
+                clause.append(" LOWER(");
+                rvalue.accept(this);
+                clause.append(")");
+                addLikeEscaping();
+            }
+        }
+
+        protected void addLikeEscaping() {
+            String escape = dialect.getLikeEscaping();
+            if (escape != null) {
+                clause.append(escape);
+            }
+        }
+        protected void visitExpression(Column column, Operator op, Operand rvalue) {
+            visitColumn(column);
+            if (op == Operator.EQ || op == Operator.NOTEQ) {
+                if (column.getType().spec == ColumnSpec.BOOLEAN) {
+                    rvalue = getBooleanLiteral(rvalue);
+                }
+                if (dialect.hasNullEmptyString() && rvalue instanceof StringLiteral && ((StringLiteral) rvalue).value.isEmpty()) {
+                    // see NXP-6172, empty values are Null in Oracle
+                    op = op == Operator.EQ ? Operator.ISNULL : Operator.ISNOTNULL;
+                    rvalue = null;
+                }
+
+            }
+            op.accept(this);
+            if (rvalue != null) {
+                rvalue.accept(this);
+            }
+        }
+
+        @Override
+        public void visitOperator(Operator node) {
+            if (node != Operator.NOT) {
+                clause.append(' ');
+            }
+            clause.append(node.toString());
+            clause.append(' ');
+        }
+
+        @Override
+        public void visitReference(Reference node) {
+            visitColumn(getColumn(node.name));
+        }
+
+        protected void visitColumn(Column column) {
+            visitedColumn = column;
+            clause.append(column.getQuotedName());
+        }
+
+        @Override
+        public void visitLiteralList(LiteralList node) {
+            clause.append('(');
+            for (Iterator<Literal> it = node.iterator(); it.hasNext();) {
+                it.next().accept(this);
+                if (it.hasNext()) {
+                    clause.append(", ");
+                }
+            }
+            clause.append(')');
+        }
+
+        @Override
+        public void visitDateLiteral(DateLiteral node) {
+            clause.append('?');
+            if (node.onlyDate) {
+                params.add(new ColumnAndValue(visitedColumn, node.toSqlDate()));
+            } else {
+                params.add(new ColumnAndValue(visitedColumn, node.toCalendar()));
+            }
+        }
+
+        @Override
+        public void visitStringLiteral(StringLiteral node) {
+            clause.append('?');
+            params.add(new ColumnAndValue(visitedColumn, node.value));
+        }
+
+        @Override
+        public void visitDoubleLiteral(DoubleLiteral node) {
+            clause.append('?');
+            params.add(new ColumnAndValue(visitedColumn, Double.valueOf(node.value)));
+        }
+
+        @Override
+        public void visitIntegerLiteral(IntegerLiteral node) {
+            clause.append('?');
+            params.add(new ColumnAndValue(visitedColumn, Long.valueOf(node.value)));
+        }
+
+        @Override
+        public void visitBooleanLiteral(BooleanLiteral node) {
+            clause.append('?');
+            params.add(new ColumnAndValue(visitedColumn, Boolean.valueOf(node.value)));
+        }
+
+        @Override
+        public void visitFunction(Function node) {
+            throw new QueryParseException("Function not supported" + node);
+        }
+
+        protected Column getColumn(String name) {
+            Column column = table.getColumn(name);
+            if (column == null) {
+                throw new QueryParseException(
+                        "No column: " + name + " for directory: " + getDirectory().getName());
+            }
+            return column;
+        }
+
+        protected Operand getBooleanLiteral(Operand rvalue) {
+            if (rvalue instanceof BooleanLiteral) {
+                return rvalue;
+            }
+            long v;
+            if (!(rvalue instanceof IntegerLiteral) || ((v = ((IntegerLiteral) rvalue).value) != 0 && v != 1)) {
+                throw new QueryParseException(
+                        "Boolean expressions require booelan or literal 0 or 1 as right argument");
+            }
+            return new BooleanLiteral(v == 1);
         }
     }
 
