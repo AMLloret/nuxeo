@@ -37,7 +37,7 @@ public interface Descriptor {
     String getId();
 
     /**
-     * Returns a descriptor reprensenting {@code other} merged into {@code this}
+     * Returns a descriptor representing {@code other} merged into {@code this}
      * <p>
      * Default implementation returns {@code other}.
      *

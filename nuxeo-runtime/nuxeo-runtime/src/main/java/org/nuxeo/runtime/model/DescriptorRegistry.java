@@ -25,6 +25,8 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
 
 /**
  * Default generic descriptor registry.
@@ -36,12 +38,12 @@ import java.util.Map;
  *
  * @since 10.3
  */
+@SuppressWarnings("unchecked")
 public class DescriptorRegistry {
 
     // target -> xp -> id -> list of descriptors
     protected Map<String, Map<String, Map<String, List<Descriptor>>>> descriptors = new HashMap<>();
 
-    @SuppressWarnings("unchecked")
     public <T extends Descriptor> T getDescriptor(String target, String xp, String id) {
         return (T) merge(descriptors.getOrDefault(target, Collections.emptyMap())
                                     .getOrDefault(xp, Collections.emptyMap())
@@ -49,20 +51,14 @@ public class DescriptorRegistry {
 
     }
 
-    @SuppressWarnings("unchecked")
     public <T extends Descriptor> List<T> getDescriptors(String target, String xp) {
-        Map<String, List<Descriptor>> descriptorsByXP = descriptors.getOrDefault(target, Collections.emptyMap())
-                                                                   .getOrDefault(xp, Collections.emptyMap());
-        List<T> result = new ArrayList<>(descriptorsByXP.size());
-        descriptorsByXP.values()
-                       .stream()
-                       .forEachOrdered(l -> {
-                           T o = (T) merge(l);
-                           if (o != null) {
-                               result.add(o);
-                           }
-                       });
-        return result;
+        return (List<T>) descriptors.getOrDefault(target, Collections.emptyMap())
+                                    .getOrDefault(xp, Collections.emptyMap())
+                                    .values()
+                                    .stream()
+                                    .map(this::merge)
+                                    .filter(Objects::nonNull)
+                                    .collect(Collectors.toList());
     }
 
     public boolean register(String target, String xp, Descriptor desciptor) {
@@ -80,14 +76,14 @@ public class DescriptorRegistry {
                           .remove(descriptor);
     }
 
-    protected Descriptor merge(Collection<Descriptor> descriptors) {
-        Descriptor descriptor = null;
-        for (Descriptor d : descriptors) {
+    protected <T extends Descriptor> T merge(Collection<T> descriptors) {
+        T descriptor = null;
+        for (T d : descriptors) {
             if (d.remove()) {
                 descriptor = null;
                 continue;
             }
-            descriptor = descriptor == null ? d : descriptor.merge(d);
+            descriptor = descriptor == null ? d : (T) descriptor.merge(d);
         }
         return descriptor;
     }

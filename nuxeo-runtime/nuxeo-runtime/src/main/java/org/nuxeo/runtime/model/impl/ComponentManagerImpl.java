@@ -80,7 +80,7 @@ public class ComponentManagerImpl implements ComponentManager {
      *
      * @since 9.2
      */
-    private final Listeners listeners;
+    private Listeners listeners;
 
     private final ConcurrentMap<String, RegistrationInfo> services;
 
@@ -796,8 +796,6 @@ public class ComponentManagerImpl implements ComponentManager {
         }
 
         infoLog.info("Starting Nuxeo Components");
-
-        // TODO PGA
 
         List<RegistrationInfo> ris = activateComponents();
 

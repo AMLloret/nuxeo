@@ -23,7 +23,6 @@ import static org.junit.Assert.assertNull;
 
 import java.util.List;
 
-import org.junit.Assert;
 import org.junit.Test;
 import org.nuxeo.runtime.model.Descriptor;
 import org.nuxeo.runtime.model.DescriptorRegistry;
@@ -83,7 +82,7 @@ public class TestDescriptorRegistry {
         registry.register(TARGET, EP, new TestDescriptor("id2", "name22", "desc2"));
         registry.register(TARGET, EP, new TestDescriptor("id2", null, "desc22"));
         List<TestDescriptor> descs = registry.getDescriptors(TARGET, EP);
-        Assert.assertEquals(2, descs.size());
+        assertEquals(2, descs.size());
         assertValues(descs.get(0), "id1", "name11", "desc11");
         assertValues(descs.get(1), "id2", "name22", "desc22");
 
@@ -116,24 +115,6 @@ public class TestDescriptorRegistry {
         assertNull(registry.getDescriptor(TARGET, EP, "id0"));
         registry.register(TARGET, EP, new TestDescriptor("id0", "final", null));
         assertValues(registry.getDescriptor(TARGET, EP, "id0"), "id0", "final", null);
-    }
-
-    @Test
-    public void testSort() {
-
-        DescriptorRegistry registry = new DescriptorRegistry();
-        registry.register(TARGET, EP, new TestDescriptor("id0", "", ""));
-        registry.register(TARGET, EP, new TestDescriptor("id1", "", ""));
-        registry.register(TARGET, EP, new TestDescriptor("id2", "", ""));
-        registry.register(TARGET, EP, new TestDescriptor("id3", "", ""));
-
-        List<TestDescriptor> descs = registry.getDescriptors(TARGET, EP);
-        Assert.assertEquals(4, descs.size());
-        assertValues(descs.get(0), "id0", "", "");
-        assertValues(descs.get(1), "id1", "", "");
-        assertValues(descs.get(2), "id2", "", "");
-        assertValues(descs.get(3), "id3", "", "");
-
     }
 
     protected void assertValues(TestDescriptor d, String id, String name, String desc) {
