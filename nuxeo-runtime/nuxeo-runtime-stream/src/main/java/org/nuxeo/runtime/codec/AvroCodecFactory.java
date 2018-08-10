@@ -21,6 +21,7 @@ package org.nuxeo.runtime.codec;
 import java.util.Map;
 
 import org.nuxeo.lib.stream.codec.AvroBinaryCodec;
+import org.nuxeo.lib.stream.codec.AvroConfluentCodec;
 import org.nuxeo.lib.stream.codec.AvroJsonCodec;
 import org.nuxeo.lib.stream.codec.AvroMessageCodec;
 import org.nuxeo.lib.stream.codec.Codec;
@@ -36,9 +37,12 @@ public class AvroCodecFactory implements CodecFactory {
 
     protected String encoding;
 
+    protected String confluentSchemaStoreUrl;
+
     @Override
     public void init(Map<String, String> options) {
         this.encoding = options.getOrDefault("encoding", "default");
+        this.confluentSchemaStoreUrl = options.getOrDefault("schemaStoreUrl", "http://localhsot:8081");
     }
 
     @Override
@@ -48,6 +52,8 @@ public class AvroCodecFactory implements CodecFactory {
             return new AvroJsonCodec<>(objectClass);
         case "binary":
             return new AvroBinaryCodec<>(objectClass);
+        case "confluent":
+            return new AvroConfluentCodec<>(objectClass, confluentSchemaStoreUrl);
         case "message":
         default:
             return new AvroMessageCodec<>(objectClass, Framework.getService(AvroService.class));

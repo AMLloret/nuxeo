@@ -37,6 +37,7 @@ import org.apache.avro.reflect.ReflectData;
 import org.junit.Ignore;
 import org.junit.Test;
 import org.nuxeo.lib.stream.codec.AvroBinaryCodec;
+import org.nuxeo.lib.stream.codec.AvroConfluentCodec;
 import org.nuxeo.lib.stream.codec.AvroJsonCodec;
 import org.nuxeo.lib.stream.codec.AvroMessageCodec;
 import org.nuxeo.lib.stream.codec.Codec;
@@ -128,6 +129,14 @@ public class TestCodec {
         Codec<Record> codec = new AvroJsonCodec<>(Record.class);
         testCodec(src, codec);
         testCodecFromFile("data/record-avro.json", codec);
+    }
+
+    @Test
+    public void testRecordConfluentAvro() throws Exception {
+        Record src = getRecord();
+        Codec<Record> codec = new AvroConfluentCodec<>(Record.class, "http://localhost:8081");
+        testCodec(src, codec);
+        testCodecFromFile("data/record-avro-confluent.bin", codec);
     }
 
     @Test
@@ -224,6 +233,11 @@ public class TestCodec {
         codec = new AvroJsonCodec<>(Record.class);
         data = codec.encode(src);
         path = Paths.get("/tmp/record-avro.json");
+        Files.write(path, data);
+
+        codec = new AvroConfluentCodec<>(Record.class, "http://localhost:8081");
+        data = codec.encode(src);
+        path = Paths.get("/tmp/record-avro-confluent.bin");
         Files.write(path, data);
     }
 }
