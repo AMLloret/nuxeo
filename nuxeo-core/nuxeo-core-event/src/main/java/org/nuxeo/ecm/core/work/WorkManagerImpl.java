@@ -649,6 +649,12 @@ public class WorkManagerImpl extends DefaultComponent implements WorkManager {
                 queuing.workReschedule(queueId, work);
                 throw new RejectedExecutionException(queueId + " was shutdown, rescheduled " + work);
             }
+            NuxeoBlockingQueue q = queuing.getQueue(queueId);
+            if (!q.active) {
+                work.setWorkInstanceState(State.SCHEDULED);
+                queuing.workReschedule(queueId, work);
+                throw new RejectedExecutionException(queueId + " is not active, rescheduled " + work);
+            }
             work.setWorkInstanceState(State.RUNNING);
             queuing.workRunning(queueId, work);
             running.add(work);

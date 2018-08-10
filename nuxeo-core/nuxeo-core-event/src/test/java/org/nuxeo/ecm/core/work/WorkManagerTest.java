@@ -46,8 +46,6 @@ import org.nuxeo.ecm.core.work.api.WorkManager;
 import org.nuxeo.ecm.core.work.api.WorkManager.Scheduling;
 import org.nuxeo.ecm.core.work.api.WorkQueueDescriptor;
 import org.nuxeo.ecm.core.work.api.WorkQueueMetrics;
-import org.nuxeo.runtime.api.Framework;
-import org.nuxeo.runtime.services.config.ConfigurationService;
 import org.nuxeo.runtime.test.runner.Deploy;
 import org.nuxeo.runtime.test.runner.Features;
 import org.nuxeo.runtime.test.runner.FeaturesRunner;
@@ -460,6 +458,17 @@ public class WorkManagerTest {
 
         Thread.sleep(getDurationMillis());
         assertMetrics(0, 0, 1, 0);
+    }
+
+    @Test
+    @Deploy("org.nuxeo.ecm.core.event.test:test-workmanager-disablequeue2.xml")
+    public void testWorkManagerDisableProcessingAll() throws Exception {
+        MetricsTracker tracker = new MetricsTracker();
+        SleepWork work1 = new SleepWork(getDurationMillis());
+        service.schedule(work1);
+        Thread.sleep(getDurationMillis() / 2);
+        // stays scheduled
+        tracker.assertDiff(1, 0, 0, 0);
     }
 
     @Test
